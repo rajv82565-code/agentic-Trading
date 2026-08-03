@@ -6,10 +6,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import yfinance as yf
 from datetime import datetime, timedelta
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense, LSTM, Dropout
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.neural_network import MLPRegressor
 import io
 
 # -----------------------------------------------------------------------------
@@ -183,7 +181,7 @@ def load_peer_correlation(tickers, start_date, end_date):
 @st.cache_resource(show_spinner=False)
 def train_lstm_waypoint_model(dataset_values, lookback=60, epochs=1, batch_size=1, forecast_horizon=7):
     """
-    Trains LSTM neural network on scaled close prices and calculates:
+    Trains Deep Neural Network (Multi-Layer Perceptron) on scaled close prices and calculates:
     1. Validation predictions
     2. Multi-step future waypoint projections (autoregressive rollout)
     """
@@ -199,20 +197,16 @@ def train_lstm_waypoint_model(dataset_values, lookback=60, epochs=1, batch_size=
         y_train.append(train_data[i, 0])
         
     x_train, y_train = np.array(x_train), np.array(y_train)
-    x_train = np.reshape(x_train, (x_train.shape[0], x_train.shape[1], 1))
     
-    # Model Architecture
-    model = Sequential([
-        LSTM(128, return_sequences=True, input_shape=(x_train.shape[1], 1)),
-        Dropout(0.1),
-        LSTM(64, return_sequences=False),
-        Dropout(0.1),
-        Dense(25),
-        Dense(1)
-    ])
-    
-    model.compile(optimizer='adam', loss='mean_squared_error')
-    model.fit(x_train, y_train, batch_size=batch_size, epochs=epochs, verbose=0)
+    # Model Architecture: Deep Neural Network
+    model = MLPRegressor(
+        hidden_layer_sizes=(128, 64),
+        activation='relu',
+        solver='adam',
+        max_iter=max(20, epochs * 30),
+        random_state=42
+    )
+    model.fit(x_train, y_train)
     
     # Validation predictions
     test_data = scaled_data[training_data_len - lookback:, :]
@@ -221,28 +215,26 @@ def train_lstm_waypoint_model(dataset_values, lookback=60, epochs=1, batch_size=
         x_test.append(test_data[i-lookback:i, 0])
         
     x_test = np.array(x_test)
-    x_test = np.reshape(x_test, (x_test.shape[0], x_test.shape[1], 1))
     
-    predictions = model.predict(x_test, verbose=0)
+    predictions = model.predict(x_test).reshape(-1, 1)
     predictions = scaler.inverse_transform(predictions)
     
     # Multi-step future waypoint forecasting (Autoregressive Rollout)
-    curr_sequence = scaled_data[-lookback:].reshape(1, lookback, 1)
+    curr_sequence = scaled_data[-lookback:].reshape(1, -1)
     waypoint_preds_scaled = []
     
     for _ in range(forecast_horizon):
-        next_pred = model.predict(curr_sequence, verbose=0)
-        waypoint_preds_scaled.append(next_pred[0, 0])
+        next_pred = model.predict(curr_sequence)
+        waypoint_preds_scaled.append(next_pred[0])
         # Update sequence with new prediction
-        next_pred_reshaped = next_pred.reshape(1, 1, 1)
-        curr_sequence = np.append(curr_sequence[:, 1:, :], next_pred_reshaped, axis=1)
+        curr_sequence = np.append(curr_sequence[:, 1:], [[next_pred[0]]], axis=1)
         
     waypoint_predictions = scaler.inverse_transform(np.array(waypoint_preds_scaled).reshape(-1, 1))
     
     # Metrics
-    rmse = np.sqrt(np.mean(((predictions - y_test) ** 2)))
-    mae = np.mean(np.abs(predictions - y_test))
-    mape = np.mean(np.abs((y_test - predictions) / y_test)) * 100
+    rmse = float(np.sqrt(np.mean(((predictions - y_test) ** 2))))
+    mae = float(np.mean(np.abs(predictions - y_test)))
+    mape = float(np.mean(np.abs((y_test - predictions) / y_test)) * 100)
     
     return {
         "model": model,

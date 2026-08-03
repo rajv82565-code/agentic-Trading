@@ -148,9 +148,9 @@ st.markdown(f"""
 # -----------------------------------------------------------------------------
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_stock_data(ticker, start_date, end_date):
-    """Fetch historical stock price data from yfinance."""
+    """Fetch historical stock price data from yfinance with robust fallback."""
     try:
-        data = yf.download(ticker, start=start_date, end=end_date, multi_level_index=False)
+        data = yf.download(ticker, start=start_date, end=end_date, multi_level_index=False, progress=False)
         if data.empty:
             return pd.DataFrame()
         if isinstance(data.columns, pd.MultiIndex):
@@ -160,7 +160,9 @@ def load_stock_data(ticker, start_date, end_date):
         data.reset_index(inplace=True)
         return data
     except Exception as e:
-        st.error(f"Error fetching data for {ticker}: {e}")
+        err_msg = str(e)
+        if "RateLimitError" in err_msg or "Too Many Requests" in err_msg:
+            st.warning("⚠️ Yahoo Finance rate limit reached. Waiting briefly before retrying...")
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -271,7 +273,7 @@ st.sidebar.markdown("### ⚙️ Control Panel")
 
 popular_tickers = ["AAPL", "GOOG", "MSFT", "AMZN", "NVDA", "TSLA"]
 selected_ticker = st.sidebar.selectbox("Select Asset Ticker", popular_tickers, index=0)
-custom_ticker = st.sidebar.text_input("Or enter Custom Ticker (e.g. BTC-USD)", value="").strip().upper()
+custom_ticker = st.sidebar.text_input("Or enter Custom Ticker", value="", help="Enter valid stock symbol (e.g. BTC-USD, META, NFLX). Leave blank to use selected ticker.").strip().upper()
 ticker = custom_ticker if custom_ticker else selected_ticker
 
 col_s1, col_s2 = st.sidebar.columns(2)
@@ -297,8 +299,14 @@ with st.spinner(f"Fetching data for {ticker}..."):
     df_stock = load_stock_data(ticker, start_date, end_date)
 
 if df_stock.empty or 'Close' not in df_stock.columns:
-    st.error(f"No price data found for ticker '{ticker}'. Please check the symbol or date range.")
-    st.stop()
+    if custom_ticker:
+        st.warning(f"⚠️ Stock symbol '{custom_ticker}' was not found on Yahoo Finance. Falling back to selected ticker '{selected_ticker}'...")
+        ticker = selected_ticker
+        df_stock = load_stock_data(ticker, start_date, end_date)
+    
+    if df_stock.empty or 'Close' not in df_stock.columns:
+        st.error(f"No price data found for ticker '{ticker}'. Please check the symbol or date range.")
+        st.stop()
 
 # Ensure Date column is datetime
 df_stock['Date'] = pd.to_datetime(df_stock['Date'])
